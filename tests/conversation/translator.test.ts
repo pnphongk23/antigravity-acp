@@ -57,6 +57,41 @@ describe("conversation/translator", () => {
 			expect(updates2.length).toBe(0);
 		});
 
+		test("emits thought deltas separately from text", () => {
+			const translator = new Translator({
+				mode: "stream",
+				skipNarration: true,
+			});
+
+			const thoughtOnly = translator.translate([
+				mockStep(1, 15, {
+					agentText: { text: "", thought: "**Analyzing**" },
+				}),
+			]);
+			expect(thoughtOnly.length).toBe(1);
+			expect(thoughtOnly[0].sessionUpdate).toBe("agent_thought_chunk");
+			expect((thoughtOnly[0] as any).content.text).toBe("**Analyzing**");
+
+			const grown = translator.translate([
+				mockStep(1, 15, {
+					agentText: { text: "", thought: "**Analyzing** the scope" },
+				}),
+			]);
+			expect(grown.length).toBe(1);
+			expect(grown[0].sessionUpdate).toBe("agent_thought_chunk");
+			expect((grown[0] as any).content.text).toBe(" the scope");
+
+			const reply = translator.translate([
+				mockStep(2, 15, {
+					agentText: {
+						text: "I will now do this",
+						thought: "",
+					},
+				}),
+			]);
+			expect(reply.length).toBe(0);
+		});
+
 		test("filters narration in stream mode", () => {
 			const translator = new Translator({
 				mode: "stream",
@@ -108,6 +143,28 @@ describe("conversation/translator", () => {
 			expect(updates.length).toBe(2);
 			expect((updates[0] as any).content.text).toBe("agent stuff");
 			expect(updates[1].sessionUpdate).toBe("user_message_chunk");
+		});
+
+		test("flushes thoughts before reply text at a tool boundary", () => {
+			const translator = new Translator({
+				mode: "replay",
+				skipNarration: false,
+			});
+
+			const updates = translator.translate([
+				mockStep(1, 15, {
+					agentText: { text: "", thought: "**Planning**" },
+				}),
+				mockStep(2, 15, { agentText: { text: "done" } }),
+				mockStep(3, 8, { toolRun: { call: { namePrimary: "view_file" } } }),
+			]);
+
+			expect(updates.length).toBe(3);
+			expect(updates[0].sessionUpdate).toBe("agent_thought_chunk");
+			expect((updates[0] as any).content.text).toBe("**Planning**");
+			expect(updates[1].sessionUpdate).toBe("agent_message_chunk");
+			expect((updates[1] as any).content.text).toBe("done");
+			expect(updates[2].sessionUpdate).toBe("tool_call");
 		});
 	});
 });

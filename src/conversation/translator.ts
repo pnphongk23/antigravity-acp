@@ -35,13 +35,22 @@ function agentChunk(text: string): SessionUpdate {
 	};
 }
 
+function thoughtChunk(text: string): SessionUpdate {
+	return {
+		sessionUpdate: "agent_thought_chunk",
+		content: { type: "text", text },
+	};
+}
+
 export class Translator {
 	// Streaming: idx -> chars of agent text already emitted (for incremental diff).
 	private readonly agentTextLengths = new Map<number, number>();
+	private readonly agentThoughtLengths = new Map<number, number>();
 	// Streaming: tool step indices already emitted (dedup across polls).
 	private readonly emittedSteps = new Set<number>();
 	// Replay: buffered consecutive agent-text parts, flushed at boundaries.
 	private readonly pendingAgentParts: string[] = [];
+	private readonly pendingThoughtParts: string[] = [];
 
 	private _lastTitle: string | null = null;
 	private _lastStepIdx = -1;
@@ -144,22 +153,54 @@ export class Translator {
 
 	private handleAgentText(row: StepRow, out: SessionUpdate[]): void {
 		const text = row.stepPayload.agentText?.text ?? "";
+		const thought = row.stepPayload.agentText?.thought ?? "";
 
 		if (this.opts.mode === "replay") {
+			if (thought.length > 0) this.pendingThoughtParts.push(thought);
 			if (text.length > 0) this.pendingAgentParts.push(text);
 			return;
 		}
 
-		// Streaming: emit only the slice appended since the last poll for this idx.
-		const emitted = this.agentTextLengths.get(row.idx) ?? 0;
-		if (text.length <= emitted) return;
-		this.agentTextLengths.set(row.idx, text.length);
-		if (this.opts.skipNarration && isNarration(text)) return;
-		const delta = text.slice(emitted);
-		if (delta.length > 0) out.push(agentChunk(delta));
+		this.emitStreamDelta(
+			out,
+			this.agentThoughtLengths,
+			row.idx,
+			thought,
+			thoughtChunk,
+			false,
+		);
+		this.emitStreamDelta(
+			out,
+			this.agentTextLengths,
+			row.idx,
+			text,
+			agentChunk,
+			this.opts.skipNarration,
+		);
+	}
+
+	private emitStreamDelta(
+		out: SessionUpdate[],
+		lengths: Map<number, number>,
+		idx: number,
+		value: string,
+		chunk: (delta: string) => SessionUpdate,
+		filter: boolean,
+	): void {
+		const emitted = lengths.get(idx) ?? 0;
+		if (value.length <= emitted) return;
+		lengths.set(idx, value.length);
+		if (filter && isNarration(value)) return;
+		const delta = value.slice(emitted);
+		if (delta.length > 0) out.push(chunk(delta));
 	}
 
 	private flushAgentBuffer(out: SessionUpdate[]): void {
+		if (this.pendingThoughtParts.length > 0) {
+			const thought = this.pendingThoughtParts.join("\n");
+			this.pendingThoughtParts.length = 0;
+			if (thought.length > 0) out.push(thoughtChunk(thought));
+		}
 		if (this.pendingAgentParts.length === 0) return;
 		const text = this.opts.skipNarration
 			? filterNarration(this.pendingAgentParts)

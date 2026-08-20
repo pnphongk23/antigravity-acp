@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-08-20
+
+### Fixed
+- **Forward ACP MCP servers into agy**: `session/new` (and load/resume) `mcpServers` are overlaid onto `~/.gemini/config/mcp_config.json` for the duration of each `agy -p` spawn, then restored. This lets Paseo HTTP MCP (`paseo` / `list_profiles`, etc.) actually register inside agy instead of being dropped.
+- **Tool status updates**: streaming no longer drops later polls of the same step idx. When agy flips a tool from in-progress to completed/failed (or attaches an error / task log), the adapter emits `tool_call_update` so the UI leaves `in_progress`.
+- **MCP and task titles**: `call_mcp_tool` now titles as `MCP server/tool`; `manage_task` status polls include the task id and, when present, the async command log.
+
 ## [1.1.0] - 2026-08-19
 
 ### Added

@@ -1,3 +1,5 @@
+import type { McpServer } from "@agentclientprotocol/sdk";
+
 /** In-memory session state for a live ACP session. */
 export interface Session {
 	/** agy conversation id this session is bound to, or null until first prompt. */
@@ -12,6 +14,8 @@ export interface Session {
 	cwd: string;
 	/** Extra workspace roots beyond cwd (from additionalDirectories param). */
 	additionalDirs: string[];
+	/** Client-supplied MCP servers, overlaid onto agy's mcp_config.json per spawn. */
+	mcpServers: McpServer[];
 	/** Human-readable title, set from conversation title updates. */
 	title: string | null;
 	/** ISO 8601 timestamp of last activity. */
@@ -33,6 +37,7 @@ export function newSession(
 		permissionMode: null,
 		cwd,
 		additionalDirs,
+		mcpServers: [],
 		title: null,
 		updatedAt: new Date().toISOString(),
 	};

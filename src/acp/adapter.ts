@@ -2,6 +2,7 @@
 // the client, and finalize. Bridges the agy subprocess and the conversation
 // streaming layer.
 
+import { McpConfigOverlay } from "../agy/mcp";
 import { buildAgyArgs, extraArgsFromEnv, spawnAgy } from "../agy/process";
 import { POLL_INTERVAL_MS } from "../constants";
 import { conversationSnapshot } from "../conversation/scan";
@@ -25,13 +26,18 @@ export interface AdapterConfig {
 	conversationsDir: string;
 	workingDir: string;
 	skipNarration: boolean;
+	/** Override path to agy's mcp_config.json (tests). */
+	mcpConfigFile?: string;
 }
 
 export class Adapter {
 	private readonly children = new Map<string, Bun.Subprocess>();
 	private readonly cancelled = new Set<string>();
+	private readonly mcpOverlay: McpConfigOverlay;
 
-	constructor(private readonly config: AdapterConfig) {}
+	constructor(private readonly config: AdapterConfig) {
+		this.mcpOverlay = new McpConfigOverlay(config.mcpConfigFile);
+	}
 
 	/** Request cancellation of an in-flight prompt for a session. */
 	cancel(sessionId: string): void {
@@ -76,92 +82,100 @@ export class Adapter {
 			extraArgs: extraArgsFromEnv(),
 		});
 
+		const restoreMcp = await this.mcpOverlay.apply(session.mcpServers);
+
 		let child: Bun.Subprocess;
 		try {
-			child = spawnAgy(this.config.binary, args, effectiveCwd);
-		} catch (err) {
-			return {
-				stopReason: "end_turn",
-				conversationId: session.conversationId,
-				lastStepIdx: session.lastStepIdx,
-				hadUpdates: false,
-				error: `failed to run agy: ${(err as Error).message}`,
-			};
-		}
-		this.children.set(sessionId, child);
-
-		// Drain stderr concurrently (resolves when the process exits).
-		const stderrPromise = child.stderr
-			? new Response(child.stderr as ReadableStream).text()
-			: Promise.resolve("");
-
-		const poller = new StreamPoller({
-			dir: this.config.conversationsDir,
-			conversationId: session.conversationId,
-			baseStepIdx: session.lastStepIdx,
-			skipNarration: this.config.skipNarration,
-			cwd: effectiveCwd,
-			snapshot,
-		});
-
-		// Serialized poll loop: emit updates in order, never overlapping.
-		const pollOnce = async () => {
-			for (const update of poller.poll()) {
-				await client.update(sessionId, update);
+			try {
+				child = spawnAgy(this.config.binary, args, effectiveCwd);
+			} catch (err) {
+				return {
+					stopReason: "end_turn",
+					conversationId: session.conversationId,
+					lastStepIdx: session.lastStepIdx,
+					hadUpdates: false,
+					error: `failed to run agy: ${(err as Error).message}`,
+				};
 			}
-		};
+			this.children.set(sessionId, child);
 
-		let polling = true;
-		const loop = (async () => {
-			while (polling) {
+			// Drain stderr concurrently (resolves when the process exits).
+			const stderrPromise = child.stderr
+				? new Response(child.stderr as ReadableStream).text()
+				: Promise.resolve("");
+
+			const poller = new StreamPoller({
+				dir: this.config.conversationsDir,
+				conversationId: session.conversationId,
+				baseStepIdx: session.lastStepIdx,
+				skipNarration: this.config.skipNarration,
+				cwd: effectiveCwd,
+				snapshot,
+			});
+
+			// Serialized poll loop: emit updates in order, never overlapping.
+			const pollOnce = async () => {
+				for (const update of poller.poll()) {
+					await client.update(sessionId, update);
+				}
+			};
+
+			let polling = true;
+			const loop = (async () => {
+				while (polling) {
+					try {
+						await pollOnce();
+					} catch (err) {
+						console.error(`[agy-acp] poll error: ${(err as Error).message}`);
+					}
+					if (!polling) break;
+					await sleep(POLL_INTERVAL_MS);
+				}
+			})();
+
+			const exitCode = await child.exited;
+			polling = false;
+			await loop;
+			this.children.delete(sessionId);
+
+			// A few trailing polls to catch rows flushed right around exit.
+			for (let attempt = 0; attempt < 3; attempt++) {
 				try {
 					await pollOnce();
 				} catch (err) {
-					console.error(`[agy-acp] poll error: ${(err as Error).message}`);
+					console.error(
+						`[agy-acp] final poll error: ${(err as Error).message}`,
+					);
 				}
-				if (!polling) break;
-				await sleep(POLL_INTERVAL_MS);
+				if (attempt < 2) await sleep(100);
 			}
-		})();
+			poller.close();
 
-		const exitCode = await child.exited;
-		polling = false;
-		await loop;
-		this.children.delete(sessionId);
+			const stderr = (await stderrPromise).trim();
+			if (stderr.length > 0) console.error(`[agy-acp] agy stderr: ${stderr}`);
 
-		// A few trailing polls to catch rows flushed right around exit.
-		for (let attempt = 0; attempt < 3; attempt++) {
-			try {
-				await pollOnce();
-			} catch (err) {
-				console.error(`[agy-acp] final poll error: ${(err as Error).message}`);
+			const wasCancelled = this.cancelled.delete(sessionId);
+
+			const outcome: PromptOutcome = {
+				stopReason: wasCancelled ? "cancelled" : "end_turn",
+				conversationId: poller.conversationId,
+				lastStepIdx: poller.lastStepIdx,
+				hadUpdates: poller.hadUpdates,
+			};
+
+			if (!wasCancelled && exitCode !== 0) {
+				console.error(`[agy-acp] WARN: agy exited with status ${exitCode}`);
+				if (!poller.hadUpdates) {
+					outcome.error =
+						stderr.length > 0
+							? `agy failed: ${stderr}`
+							: `agy exited with status: ${exitCode}`;
+				}
 			}
-			if (attempt < 2) await sleep(100);
+
+			return outcome;
+		} finally {
+			await restoreMcp();
 		}
-		poller.close();
-
-		const stderr = (await stderrPromise).trim();
-		if (stderr.length > 0) console.error(`[agy-acp] agy stderr: ${stderr}`);
-
-		const wasCancelled = this.cancelled.delete(sessionId);
-
-		const outcome: PromptOutcome = {
-			stopReason: wasCancelled ? "cancelled" : "end_turn",
-			conversationId: poller.conversationId,
-			lastStepIdx: poller.lastStepIdx,
-			hadUpdates: poller.hadUpdates,
-		};
-
-		if (!wasCancelled && exitCode !== 0) {
-			console.error(`[agy-acp] WARN: agy exited with status ${exitCode}`);
-			if (!poller.hadUpdates) {
-				outcome.error =
-					stderr.length > 0
-						? `agy failed: ${stderr}`
-						: `agy exited with status: ${exitCode}`;
-			}
-		}
-
-		return outcome;
 	}
 }

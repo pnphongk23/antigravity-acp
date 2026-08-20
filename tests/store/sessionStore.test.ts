@@ -49,6 +49,7 @@ describe("SessionStore", () => {
 			permissionMode: "plan",
 			cwd: "/path/to/cwd",
 			additionalDirs: ["/path/to/dir"],
+			mcpServers: [],
 			title: "Test Title",
 			updatedAt: "2026-06-29T00:00:00Z",
 		};
@@ -78,6 +79,7 @@ describe("SessionStore", () => {
 			permissionMode: null,
 			cwd: "",
 			additionalDirs: [],
+			mcpServers: [],
 			title: null,
 			updatedAt: new Date().toISOString(),
 		};

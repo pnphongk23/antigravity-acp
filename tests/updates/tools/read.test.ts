@@ -92,5 +92,45 @@ describe("updates/tools/read.ts", () => {
 			expect(update.title).toBe("Read c.txt");
 			expect(update.locations).toEqual([{ path: "/a/c.txt", line: 1 }]);
 		});
+
+		test("step 132 view_file without protobuf content reads from disk", () => {
+			const path = "/tmp/agy-acp-read-test.txt";
+			Bun.write(
+				path,
+				["line1", "line2", "line3", "line4", "line5"].join("\n"),
+			);
+
+			const step = {
+				idx: 3,
+				stepType: 132,
+				status: 3,
+				stepPayload: {
+					toolRun: {
+						call: {
+							namePrimary: "view_file",
+							rawInputJson: JSON.stringify({
+								AbsolutePath: path,
+								StartLine: 2,
+								EndLine: 4,
+								toolSummary: "Check slice",
+							}),
+						},
+					},
+				},
+				permission: {
+					kind: "read_file",
+					value: path,
+					decision: 1,
+				},
+			} as unknown as StepRow;
+
+			const update: any = readUpdate(step);
+			expect(update.title).toBe("Check slice");
+			expect(update.content[0].content.text).toContain("line2");
+			expect(update.content[0].content.text).toContain("line4");
+			expect(update.content.some((c: any) =>
+				c.content?.text?.includes("Permission requested"),
+			)).toBe(false);
+		});
 	});
 });

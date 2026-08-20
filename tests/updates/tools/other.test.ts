@@ -22,6 +22,27 @@ describe("updates/tools/other.ts", () => {
 			]);
 		});
 
+		test("handles call_mcp_tool", () => {
+			const step = {
+				stepPayload: {
+					toolRun: {
+						call: {
+							namePrimary: "call_mcp_tool",
+							rawInputJson: JSON.stringify({
+								ServerName: "paseo",
+								ToolName: "list_profiles",
+								Args: { limit: 5 },
+							}),
+						},
+					},
+				},
+			} as StepRow;
+			const update: any = otherUpdate(step);
+			expect(update.title).toBe("MCP paseo/list_profiles");
+			const text = update.content?.[0]?.content?.text;
+			expect(text).toContain("limit");
+		});
+
 		test("handles schedule", () => {
 			const step = {
 				stepPayload: {

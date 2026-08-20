@@ -18,6 +18,12 @@ export const SESSIONS_FILE = path.join(STATE_DIR, "sessions.json");
 /** Persistent model cache store. */
 export const MODELS_CACHE_FILE = path.join(STATE_DIR, "models.json");
 
+/** agy's global MCP config. Overlay ACP mcpServers here for the duration of each spawn.
+ *  Override via AGY_MCP_CONFIG (tests / nonstandard installs). */
+export const AGY_MCP_CONFIG_FILE =
+	process.env.AGY_MCP_CONFIG ||
+	path.join(HOME, ".gemini", "config", "mcp_config.json");
+
 /** Poll interval (ms) for streaming new steps during a live prompt turn. */
 export const POLL_INTERVAL_MS = 200;
 

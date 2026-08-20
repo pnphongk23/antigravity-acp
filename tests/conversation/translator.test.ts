@@ -57,6 +57,31 @@ describe("conversation/translator", () => {
 			expect(updates2.length).toBe(0);
 		});
 
+		test("re-emits tool_call_update when step status changes", () => {
+			const translator = new Translator({
+				mode: "stream",
+				skipNarration: false,
+			});
+
+			const start = mockStep(2, 8, {
+				toolRun: { call: { namePrimary: "view_file" } },
+			});
+			start.status = 2;
+			const updates1 = translator.translate([start]);
+			expect(updates1.length).toBe(1);
+			expect(updates1[0].sessionUpdate).toBe("tool_call");
+			expect((updates1[0] as { status: string }).status).toBe("in_progress");
+
+			const done = {
+				...start,
+				status: 3,
+			};
+			const updates2 = translator.translate([done]);
+			expect(updates2.length).toBe(1);
+			expect(updates2[0].sessionUpdate).toBe("tool_call_update");
+			expect((updates2[0] as { status: string }).status).toBe("completed");
+		});
+
 		test("emits thought deltas separately from text", () => {
 			const translator = new Translator({
 				mode: "stream",

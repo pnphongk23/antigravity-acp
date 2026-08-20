@@ -1,4 +1,5 @@
 import type { SessionUpdate } from "@agentclientprotocol/sdk";
+import * as fs from "node:fs";
 import type { StepRow } from "../../types";
 import {
 	asNum,
@@ -82,6 +83,25 @@ import {
 }
 */
 
+/** Read a slice of a local file when agy omits viewFile.content (common in ACP mode). */
+function readFileSlice(
+	filePath: string,
+	startLine: number,
+	endLine: number | null,
+): string | null {
+	try {
+		const text = fs.readFileSync(filePath, "utf8");
+		const lines = text.split(/\r?\n/);
+		const start = Math.max(0, startLine - 1);
+		const end =
+			endLine !== null ? Math.min(lines.length, endLine) : lines.length;
+		if (start >= lines.length) return "";
+		return lines.slice(start, end).join("\n");
+	} catch {
+		return null;
+	}
+}
+
 export function readUpdate(stepRow: StepRow, cwd?: string): SessionUpdate {
 	const { stepPayload, stepType } = stepRow;
 	const toolRun = stepPayload.toolRun;
@@ -133,8 +153,10 @@ export function readUpdate(stepRow: StepRow, cwd?: string): SessionUpdate {
 		const endLine =
 			asNum(pick(rawInput, "EndLine", "endLine")) ?? asNum(view?.endLine);
 
-		title = shown ? `Read ${shown}` : "Read file";
-		if (shown) {
+		const summary = asStr(pick(rawInput, "toolSummary", "ToolSummary"))?.trim();
+
+		title = summary || (shown ? `Read ${shown}` : "Read file");
+		if (!summary && shown) {
 			title +=
 				endLine !== null
 					? `:${startLine === 0 ? 1 : startLine}-${endLine}`
@@ -143,7 +165,15 @@ export function readUpdate(stepRow: StepRow, cwd?: string): SessionUpdate {
 
 		if (filePath) locations.push({ path: filePath, line: startLine });
 
-		const body = asStr(view?.content);
+		let body = asStr(view?.content);
+		if ((!body || body.length === 0) && filePath) {
+			const fromDisk = readFileSlice(
+				filePath,
+				startLine === 0 ? 1 : startLine,
+				endLine,
+			);
+			if (fromDisk !== null) body = fromDisk;
+		}
 		if (body && body.length > 0) {
 			content.push(codeBlock(body));
 		}

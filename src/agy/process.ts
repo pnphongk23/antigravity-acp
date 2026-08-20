@@ -22,7 +22,11 @@ export async function discoverModels(binary: string): Promise<DiscoveredModel[]>
 		return text
 			.split("\n")
 			.map((line) => line.trim())
-			.filter((line) => line.length > 0)
+			.filter(
+				(line) =>
+					line.length > 0 &&
+					!line.toLowerCase().startsWith("fetching"),
+			)
 			.map((line) => {
 				const parts = line.split(/\s+/);
 				const value = parts[0] ?? "";

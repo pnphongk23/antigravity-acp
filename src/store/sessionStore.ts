@@ -35,6 +35,9 @@ function normalizeSession(raw: Record<string, unknown>): StoredSession {
 	const additionalDirs = Array.isArray(raw.additionalDirs)
 		? (raw.additionalDirs as string[]).filter((d) => typeof d === "string")
 		: [];
+	const mcpServers = Array.isArray(raw.mcpServers)
+		? (raw.mcpServers as StoredSession["mcpServers"])
+		: [];
 	return {
 		conversationId,
 		lastStepIdx,
@@ -42,6 +45,7 @@ function normalizeSession(raw: Record<string, unknown>): StoredSession {
 		permissionMode,
 		cwd: (raw.cwd as string | undefined) ?? "",
 		additionalDirs,
+		mcpServers,
 		title: (raw.title as string | null | undefined) ?? null,
 		updatedAt:
 			(raw.updatedAt as string | undefined) ?? new Date().toISOString(),

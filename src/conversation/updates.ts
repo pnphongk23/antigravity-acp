@@ -29,7 +29,7 @@ function buildByToolName(
 	const name = stepRow.stepPayload.toolRun?.call?.namePrimary ?? "";
 	if (!name) return null;
 
-	if (name === "view_file" || name === "list_dir")
+	if (name === "view_file" || name === "list_dir" || name === "read_file")
 		return readUpdate(stepRow, cwd);
 	if (name === "grep_search" || name === "search_web")
 		return searchUpdate(stepRow, cwd);
@@ -67,7 +67,7 @@ function buildByToolName(
  *   31            read_url_content       → tool_call (fetch)
  *   127           invoke_subagent        → tool_call (other)
  *   138           ask_question           → tool_call (other)
- *   132           manage_task/schedule/… → tool_call (generic fallback)
+ *   132           orchestration + view_file (newer agy) → routed by tool name
  *   90, 98, 101   lifecycle/system       → null (skipped)
  *   default       unknown tool step      → tool_call (generic) or null
  */
@@ -95,6 +95,10 @@ export const buildUpdatefromStepPayload = (
 			// no call. Route by tool name; skip the empty wrappers.
 			return buildByToolName(stepRow, cwd);
 
+		case 132:
+			// Newer agy builds also emit view_file / list_dir / run_command here.
+			return buildByToolName(stepRow, cwd);
+
 		case 8: // view_file
 		case 9: // list_dir
 			return readUpdate(stepRow, cwd);
@@ -114,9 +118,6 @@ export const buildUpdatefromStepPayload = (
 
 		case 138: // ask_question
 			return questionUpdate(stepRow);
-
-		case 132: // manage_task / schedule / send_message / manage_subagents
-			return otherUpdate(stepRow);
 
 		case 90: // ephemeral_message
 		case 98: // conversation_history

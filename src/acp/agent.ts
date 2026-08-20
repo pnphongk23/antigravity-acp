@@ -10,6 +10,7 @@ import type {
 	ListSessionsResponse,
 	LoadSessionResponse,
 	LogoutResponse,
+	McpServer,
 	NewSessionResponse,
 	PromptResponse,
 	ResumeSessionResponse,
@@ -88,11 +89,17 @@ export class AgyAcpAgent {
 			// ignore
 		}
 
-		// Save initial default models cache if missing
+		// Seed defaults when cache is missing or empty so session/new returns models immediately.
 		try {
+			if (this.availableModels.length === 0) {
+				this.availableModels = [...DEFAULT_MODELS];
+			}
 			if (!fs.existsSync(MODELS_CACHE_FILE)) {
 				fs.mkdirSync(STATE_DIR, { recursive: true });
-				fs.writeFileSync(MODELS_CACHE_FILE, JSON.stringify(this.availableModels));
+				fs.writeFileSync(
+					MODELS_CACHE_FILE,
+					JSON.stringify(this.availableModels),
+				);
 			}
 		} catch {
 			// ignore
@@ -119,7 +126,7 @@ export class AgyAcpAgent {
 	// --- ACP methods ---------------------------------------------------------
 
 	listModels() {
-		const models = this.availableModels.length > 0 ? this.availableModels : DEFAULT_MODELS;
+		const models = this.resolvedModels();
 		return {
 			models: models.map((m) => ({
 				id: m.value,
@@ -137,6 +144,7 @@ export class AgyAcpAgent {
 			agentCapabilities: {
 				loadSession: true,
 				promptCapabilities: { embeddedContext: true },
+				mcpCapabilities: { http: true, sse: true },
 				sessionCapabilities: {
 					list: {},
 					delete: {},
@@ -174,15 +182,21 @@ export class AgyAcpAgent {
 		return {};
 	}
 
-	newSession(
-		params: { cwd?: string; additionalDirectories?: string[] },
+	async newSession(
+		params: {
+			cwd?: string;
+			additionalDirectories?: string[];
+			mcpServers?: McpServer[];
+		},
 		client: AcpClient,
-	): NewSessionResponse {
+	): Promise<NewSessionResponse> {
 		const cwd = params.cwd || this.config.workingDir;
 		const additionalDirs = params.additionalDirectories ?? [];
 		const { sessionId, session } = this.sessions.create(cwd, additionalDirs);
+		session.mcpServers = params.mcpServers ?? [];
 		this.activeClients.set(sessionId, client);
 		this.announceSession(client, sessionId, session);
+		await this.sessions.persist(sessionId, session);
 		return { sessionId, ...this.configResult(session) };
 	}
 
@@ -191,6 +205,7 @@ export class AgyAcpAgent {
 			sessionId?: string;
 			cwd?: string;
 			additionalDirectories?: string[];
+			mcpServers?: McpServer[];
 		},
 		client: AcpClient,
 	): Promise<LoadSessionResponse> {
@@ -203,6 +218,9 @@ export class AgyAcpAgent {
 		}
 		if (params.additionalDirectories) {
 			session.additionalDirs = params.additionalDirectories;
+		}
+		if (params.mcpServers) {
+			session.mcpServers = params.mcpServers;
 		}
 
 		if (session.conversationId) {
@@ -222,6 +240,7 @@ export class AgyAcpAgent {
 
 		this.activeClients.set(sessionId, client);
 		this.announceSession(client, sessionId, session);
+		await this.sessions.persist(sessionId, session);
 		return this.configResult(session);
 	}
 
@@ -230,6 +249,7 @@ export class AgyAcpAgent {
 			sessionId?: string;
 			cwd?: string;
 			additionalDirectories?: string[];
+			mcpServers?: McpServer[];
 		},
 		client: AcpClient,
 	): Promise<ResumeSessionResponse> {
@@ -244,6 +264,10 @@ export class AgyAcpAgent {
 		}
 		if (params.additionalDirectories) {
 			session.additionalDirs = params.additionalDirectories;
+			dirty = true;
+		}
+		if (params.mcpServers) {
+			session.mcpServers = params.mcpServers;
 			dirty = true;
 		}
 		if (dirty) await this.sessions.persist(sessionId, session);
@@ -453,9 +477,15 @@ export class AgyAcpAgent {
 		};
 	}
 
+	private resolvedModels(): DiscoveredModel[] {
+		return this.availableModels.length > 0
+			? this.availableModels
+			: DEFAULT_MODELS;
+	}
+
 	private configOptions(session: Session): SessionConfigOption[] {
 		const options: SessionConfigOption[] = [];
-		const models = this.availableModels;
+		const models = this.resolvedModels();
 
 		if (models.length > 0) {
 			const currentModel =

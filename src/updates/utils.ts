@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import path from "node:path";
 import type { SessionUpdate, ToolKind } from "@agentclientprotocol/sdk";
 import type {
@@ -6,6 +7,8 @@ import type {
 	TaskDetails,
 } from "../conversation/columns";
 import type { StepRow } from "../types";
+
+const MAX_TASK_LOG_CHARS = 32_000;
 
 /**
  * Parse the JSON-encoded tool arguments (`toolRun.call.rawInputJson`) from a
@@ -87,6 +90,24 @@ function taskBlock(t: TaskDetails): Record<string, unknown> {
 	return textBlock(lines.join("\n"));
 }
 
+/** Read a local task log (agy async command output) when `logUri` points at a file. */
+export function readTaskLog(
+	task: TaskDetails | null | undefined,
+): string | null {
+	if (!task?.logUri) return null;
+	const file = fsPath(task.logUri);
+	if (!file) return null;
+	try {
+		if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
+		const text = fs.readFileSync(file, "utf8");
+		if (text.length === 0) return null;
+		if (text.length <= MAX_TASK_LOG_CHARS) return text;
+		return `...\n${text.slice(-MAX_TASK_LOG_CHARS)}`;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Build a `tool_call` session update with the common envelope. Every tool step
  * flows through here, so this is also where the auxiliary columns are surfaced:
@@ -101,6 +122,7 @@ export function toolCallUpdate(opts: {
 	status?: "pending" | "in_progress" | "completed" | "failed";
 	content?: Record<string, unknown>[];
 	locations?: Record<string, unknown>[];
+	sessionUpdate?: "tool_call" | "tool_call_update";
 }): SessionUpdate {
 	const {
 		stepRow,
@@ -109,11 +131,21 @@ export function toolCallUpdate(opts: {
 		status = toolCallStatus(stepRow),
 		content,
 		locations,
+		sessionUpdate = "tool_call",
 	} = opts;
 
 	const blocks: Record<string, unknown>[] = [...(content ?? [])];
 	if (stepRow.task) blocks.push(taskBlock(stepRow.task));
-	if (stepRow.permission) blocks.push(permissionBlock(stepRow.permission));
+	const log = readTaskLog(stepRow.task);
+	if (log) blocks.push(textBlock(log));
+	const skipReadPermission =
+		kind === "read" &&
+		status === "completed" &&
+		blocks.length > 0 &&
+		stepRow.permission?.kind === "read_file";
+	if (stepRow.permission && !skipReadPermission) {
+		blocks.push(permissionBlock(stepRow.permission));
+	}
 	if (stepRow.error) blocks.push(errorBlock(stepRow.error));
 
 	const rawInput = parseRawInput(stepRow);
@@ -126,7 +158,7 @@ export function toolCallUpdate(opts: {
 		: undefined;
 
 	return {
-		sessionUpdate: "tool_call",
+		sessionUpdate,
 		toolCallId: toolCallId(stepRow),
 		title,
 		kind,

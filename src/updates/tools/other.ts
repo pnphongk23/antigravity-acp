@@ -17,6 +17,7 @@ import {
   schedule:         { DurationSeconds: "300", Prompt: "...", TimerCondition: "<id>" }
   send_message:     { Message: "...", Recipient?: "<agent-id>" }
   manage_subagents: { Action: "kill_all" }
+  call_mcp_tool:    { ServerName: "paseo", ToolName: "list_profiles", Args?: {...} }
 */
 
 /**
@@ -37,8 +38,35 @@ export function otherUpdate(stepRow: StepRow): SessionUpdate {
 			const action =
 				asStr(pick(rawInput, "Action", "action"))?.trim() || "manage";
 			const taskId = asStr(pick(rawInput, "TaskId", "taskId"));
-			const title = `Manage task ${action}`;
+			const summary = asStr(
+				pick(rawInput, "toolSummary", "ToolSummary"),
+			)?.trim();
+			const title = summary || `Manage task ${action}`;
 			const content = taskId ? [textBlock(`Task: ${taskId}`)] : [];
+			return toolCallUpdate({ stepRow, title, kind: "other", content });
+		}
+
+		case "call_mcp_tool": {
+			const server =
+				asStr(pick(rawInput, "ServerName", "serverName", "server"))?.trim() ||
+				"";
+			const tool =
+				asStr(pick(rawInput, "ToolName", "toolName", "tool"))?.trim() || "";
+			const title =
+				server && tool
+					? `MCP ${server}/${tool}`
+					: server
+						? `MCP ${server}`
+						: "Call MCP tool";
+			const args = pick(rawInput, "Args", "args", "arguments");
+			const content: Record<string, unknown>[] = [];
+			if (args != null) {
+				content.push(
+					codeBlock(
+						typeof args === "string" ? args : JSON.stringify(args, null, 2),
+					),
+				);
+			}
 			return toolCallUpdate({ stepRow, title, kind: "other", content });
 		}
 

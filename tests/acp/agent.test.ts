@@ -65,6 +65,10 @@ describe("AgyAcpAgent", () => {
 	test("initialize returns capabilities", async () => {
 		const result = await agent.initialize();
 		expect(result.agentCapabilities).toBeDefined();
+		expect(result.agentCapabilities.mcpCapabilities).toEqual({
+			http: true,
+			sse: true,
+		});
 	});
 
 	test("authenticate throws for invalid method", () => {

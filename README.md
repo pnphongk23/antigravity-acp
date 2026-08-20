@@ -82,6 +82,7 @@ skipped when `AGY_SKIP_DOWNLOAD=1` or `$AGY_BIN` is set.
 | `AGY_SKIP_DOWNLOAD` | Set to `1` to skip the download entirely |
 | `AGY_EXTRA_ARGS` | Extra args forwarded to every `agy` invocation |
 | `AGY_CONVERSATIONS_DIR` | Custom directory where `agy` writes its conversation SQLite databases |
+| `AGY_MCP_CONFIG` | Override path to agy's `mcp_config.json` (default `~/.gemini/config/mcp_config.json`) |
 
 ## Build (Single Executable Application)
 
@@ -101,8 +102,10 @@ auto-downloads `agy` on first launch if not present next to the executable.
 ## ACP surface
 
 - **initialize** — advertises `loadSession`, `additionalDirectories`,
-  `list`/`delete`/`resume`/`close`, `embeddedContext`.
-- **session/new** — accepts `cwd` and `additionalDirectories`; returns the session configuration options (including modes and available models).
+  `list`/`delete`/`resume`/`close`, `embeddedContext`, and MCP HTTP/SSE.
+- **session/new** — accepts `cwd`, `additionalDirectories`, and `mcpServers`;
+  returns the session configuration options (including modes and available models).
+  Client MCP servers are forwarded into agy's `mcp_config.json` for each prompt spawn.
 - **session/set_config_option** — model and mode selection; persisted per session.
 - **session/load** — replays full conversation history from the `agy` SQLite DB,
   including tool calls, task/permission/error decorators, and title updates.
@@ -125,6 +128,7 @@ src/
     binary.ts                 resolve binary: SEA-local / bin/ / $AGY_BIN / PATH
     installer.ts              shared download + SHA-256 verify + extract logic
     process.ts                Bun.spawn, arg building, model discovery
+    mcp.ts                    overlay ACP mcpServers onto agy's mcp_config.json
   constants/
     index.ts                  shared constants (paths, poll intervals, modes, commands)
   conversation/

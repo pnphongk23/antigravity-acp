@@ -48,6 +48,8 @@ export class Translator {
 	private readonly agentThoughtLengths = new Map<number, number>();
 	// Streaming: tool step indices already emitted (dedup across polls).
 	private readonly emittedSteps = new Set<number>();
+	// Streaming: last fingerprint per idx so status/output changes re-emit.
+	private readonly emittedFingerprints = new Map<number, string>();
 	// Replay: buffered consecutive agent-text parts, flushed at boundaries.
 	private readonly pendingAgentParts: string[] = [];
 	private readonly pendingThoughtParts: string[] = [];
@@ -99,24 +101,37 @@ export class Translator {
 
 			default: {
 				// Tool calls and lifecycle steps. In replay, a tool call ends the
-				// current agent message; in streaming, dedup by idx across polls.
+				// current agent message; in streaming, dedup by idx across polls
+				// unless the step's status or output changed (then emit
+				// tool_call_update so the UI leaves in_progress).
 				if (this.opts.mode === "replay") {
 					this.flushAgentBuffer(out);
 				} else if (this.emittedSteps.has(row.idx)) {
+					const fp = stepFingerprint(row);
+					if (this.emittedFingerprints.get(row.idx) === fp) return;
+					this.emittedFingerprints.set(row.idx, fp);
+					this.pushDispatched(row, out, true);
 					return;
 				}
 				this.emittedSteps.add(row.idx);
+				this.emittedFingerprints.set(row.idx, stepFingerprint(row));
 				this.pushDispatched(row, out);
 			}
 		}
 	}
 
-	private pushDispatched(row: StepRow, out: SessionUpdate[]): void {
+	private pushDispatched(
+		row: StepRow,
+		out: SessionUpdate[],
+		asUpdate = false,
+	): void {
 		const update = buildUpdatefromStepPayload(row, this.opts.cwd);
 		if (Array.isArray(update)) {
-			out.push(...update);
+			for (const item of update) {
+				out.push(asUpdate ? asToolCallUpdate(item) : item);
+			}
 		} else if (update) {
-			out.push(update);
+			out.push(asUpdate ? asToolCallUpdate(update) : update);
 		}
 	}
 
@@ -208,4 +223,23 @@ export class Translator {
 		this.pendingAgentParts.length = 0;
 		if (text && text.length > 0) out.push(agentChunk(text));
 	}
+}
+
+/** Stable fingerprint of the fields that should trigger a tool_call_update. */
+function stepFingerprint(row: StepRow): string {
+	return JSON.stringify({
+		s: row.status,
+		e: row.error?.message ?? "",
+		d: row.error?.detail ?? "",
+		t: row.task?.logUri ?? "",
+		i: row.task?.taskId ?? "",
+		x: row.task?.description ?? "",
+	});
+}
+
+function asToolCallUpdate(update: SessionUpdate): SessionUpdate {
+	if (update.sessionUpdate === "tool_call") {
+		return { ...update, sessionUpdate: "tool_call_update" };
+	}
+	return update;
 }

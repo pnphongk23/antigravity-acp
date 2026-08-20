@@ -1,5 +1,6 @@
 // Wire Bun's stdio to the ACP connection and dispatch to AgyAcpAgent.
 
+import type { McpServer } from "@agentclientprotocol/sdk";
 import { agent, methods, ndJsonStream } from "@agentclientprotocol/sdk";
 import pkg from "../../package.json";
 import { resolveAgyBinary } from "../agy/binary";
@@ -46,7 +47,11 @@ export function runAcp() {
 		.onRequest(methods.agent.logout, () => agentImpl.logout())
 		.onRequest(methods.agent.session.new, (ctx) =>
 			agentImpl.newSession(
-				ctx.params as { cwd?: string; additionalDirectories?: string[] },
+				ctx.params as {
+					cwd?: string;
+					additionalDirectories?: string[];
+					mcpServers?: McpServer[];
+				},
 				new AcpClient(ctx.client),
 			),
 		)
@@ -56,6 +61,7 @@ export function runAcp() {
 					sessionId?: string;
 					cwd?: string;
 					additionalDirectories?: string[];
+					mcpServers?: McpServer[];
 				},
 				new AcpClient(ctx.client),
 			),
@@ -66,6 +72,7 @@ export function runAcp() {
 					sessionId?: string;
 					cwd?: string;
 					additionalDirectories?: string[];
+					mcpServers?: McpServer[];
 				},
 				new AcpClient(ctx.client),
 			),

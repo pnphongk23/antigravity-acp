@@ -9,7 +9,9 @@ export interface DiscoveredModel {
 
 /** Query agy for the list of available models (empty on any failure).
  *  Uses async spawn to avoid blocking the event loop (~5s for `agy models`). */
-export async function discoverModels(binary: string): Promise<DiscoveredModel[]> {
+export async function discoverModels(
+	binary: string,
+): Promise<DiscoveredModel[]> {
 	try {
 		const proc = Bun.spawn([binary, "models"], {
 			stdin: "ignore",
@@ -23,9 +25,7 @@ export async function discoverModels(binary: string): Promise<DiscoveredModel[]>
 			.split("\n")
 			.map((line) => line.trim())
 			.filter(
-				(line) =>
-					line.length > 0 &&
-					!line.toLowerCase().startsWith("fetching"),
+				(line) => line.length > 0 && !line.toLowerCase().startsWith("fetching"),
 			)
 			.map((line) => {
 				const parts = line.split(/\s+/);
@@ -50,8 +50,9 @@ export interface AgyArgsOptions {
 	extraArgs?: string[];
 }
 
-/** Build the agy CLI argument vector for a single prompt turn. */
-export function buildAgyArgs(opts: AgyArgsOptions): string[] {
+type AgyProcessOptions = Omit<AgyArgsOptions, "prompt">;
+
+function buildCommonAgyArgs(opts: AgyProcessOptions): string[] {
 	const args = ["--add-dir", opts.workingDir];
 	for (const dir of opts.additionalDirs ?? []) {
 		args.push("--add-dir", dir);
@@ -66,8 +67,23 @@ export function buildAgyArgs(opts: AgyArgsOptions): string[] {
 		// terminal for the user to approve tool calls.
 		args.push("--dangerously-skip-permissions");
 	}
-	args.push("-p", opts.prompt);
 	return args;
+}
+
+/** Build the agy CLI argument vector for a single prompt turn. */
+export function buildAgyArgs(opts: AgyArgsOptions): string[] {
+	return [...buildCommonAgyArgs(opts), "-p", opts.prompt];
+}
+
+/** Build args for agy's long-lived, bidirectional NDJSON print mode. */
+export function buildStreamingAgyArgs(opts: AgyProcessOptions): string[] {
+	return [
+		...buildCommonAgyArgs(opts),
+		"--input-format",
+		"stream-json",
+		"--output-format",
+		"stream-json",
+	];
 }
 
 /** Spawn agy for a prompt. stdout is ignored (agy persists to its DB); stderr is

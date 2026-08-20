@@ -6,7 +6,7 @@ import type { McpServer } from "@agentclientprotocol/sdk";
 import { McpConfigOverlay, toAgyMcpServers } from "../../src/agy/mcp";
 
 describe("toAgyMcpServers()", () => {
-	test("converts ACP HTTP servers to agy serverUrl + headers object", () => {
+	test("routes Paseo's per-agent MCP through CLI instead of global config", () => {
 		const servers = [
 			{
 				type: "http",
@@ -16,9 +16,22 @@ describe("toAgyMcpServers()", () => {
 			},
 		] as McpServer[];
 
+		expect(toAgyMcpServers(servers)).toEqual({});
+	});
+
+	test("still converts non-agent HTTP servers named paseo", () => {
+		const servers = [
+			{
+				type: "http",
+				name: "paseo",
+				url: "https://example.com/mcp",
+				headers: [{ name: "Authorization", value: "Bearer secret" }],
+			},
+		] as McpServer[];
+
 		expect(toAgyMcpServers(servers)).toEqual({
 			paseo: {
-				serverUrl: "http://127.0.0.1:6767/mcp/agents?callerAgentId=abc",
+				serverUrl: "https://example.com/mcp",
 				headers: { Authorization: "Bearer secret" },
 			},
 		});
@@ -122,17 +135,19 @@ describe("McpConfigOverlay", () => {
 			},
 		] as McpServer[]);
 
-		expect(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.paseo.serverUrl).toBe(
-			"http://b.example/mcp",
-		);
+		expect(
+			JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.paseo.serverUrl,
+		).toBe("http://b.example/mcp");
 
 		await restoreA();
-		expect(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.paseo.serverUrl).toBe(
-			"http://b.example/mcp",
-		);
+		expect(
+			JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.paseo.serverUrl,
+		).toBe("http://b.example/mcp");
 
 		await restoreB();
-		expect(JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.paseo).toBeUndefined();
+		expect(
+			JSON.parse(fs.readFileSync(file, "utf8")).mcpServers.paseo,
+		).toBeUndefined();
 	});
 
 	test("deletes a file it created when the overlay restores", async () => {

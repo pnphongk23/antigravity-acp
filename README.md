@@ -83,6 +83,16 @@ skipped when `AGY_SKIP_DOWNLOAD=1` or `$AGY_BIN` is set.
 | `AGY_EXTRA_ARGS` | Extra args forwarded to every `agy` invocation |
 | `AGY_CONVERSATIONS_DIR` | Custom directory where `agy` writes its conversation SQLite databases |
 | `AGY_MCP_CONFIG` | Override path to agy's `mcp_config.json` (default `~/.gemini/config/mcp_config.json`) |
+| `AGY_PERSISTENT` | Native stream-json sessions are enabled by default; set to `0` for one process per prompt |
+| `AGY_PROMPT_TIMEOUT_MS` | Timeout for one streamed prompt turn in milliseconds (default: 300000) |
+
+### Persistent sessions
+
+With `agy` 1.1.15 or newer, each ACP session keeps one native
+`--input-format stream-json --output-format stream-json` process alive. Prompts
+are sent as NDJSON user events, while the existing SQLite translator continues
+to provide ACP updates. If stream-json startup fails, the adapter automatically
+falls back to the original one-shot `agy -p` path.
 
 ## Build (Single Executable Application)
 
@@ -105,7 +115,9 @@ auto-downloads `agy` on first launch if not present next to the executable.
   `list`/`delete`/`resume`/`close`, `embeddedContext`, and MCP HTTP/SSE.
 - **session/new** — accepts `cwd`, `additionalDirectories`, and `mcpServers`;
   returns the session configuration options (including modes and available models).
-  Client MCP servers are forwarded into agy's `mcp_config.json` for each prompt spawn.
+  Client MCP servers are forwarded into agy's `mcp_config.json`. Paseo's internal
+  per-agent MCP is routed through the caller-aware `paseo` CLI instead, avoiding
+  cross-agent collisions in agy's global config.
 - **session/set_config_option** — model and mode selection; persisted per session.
 - **session/load** — replays full conversation history from the `agy` SQLite DB,
   including tool calls, task/permission/error decorators, and title updates.
@@ -122,13 +134,15 @@ src/
     server.ts                 Bun stdio <-> ndJsonStream <-> agent
     agent.ts                  initialize / session.* / prompt / cancel
     sessions.ts               in-memory registry + eviction
-    adapter.ts                prompt turn: spawn agy, poll, stream
+    adapter.ts                prompt turns: reuse agy stream, poll DB
     client.ts                 AgentContext wrapper (notify / request)
   agy/
     binary.ts                 resolve binary: SEA-local / bin/ / $AGY_BIN / PATH
     installer.ts              shared download + SHA-256 verify + extract logic
     process.ts                Bun.spawn, arg building, model discovery
-    mcp.ts                    overlay ACP mcpServers onto agy's mcp_config.json
+    streaming.ts              native bidirectional stream-json runtime
+    mcp.ts                    overlay compatible ACP MCP servers into agy
+    paseo-cli.ts              detect Paseo MCP and provide caller-aware CLI context
   constants/
     index.ts                  shared constants (paths, poll intervals, modes, commands)
   conversation/

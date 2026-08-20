@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
 import {
 	buildAgyArgs,
+	buildStreamingAgyArgs,
 	discoverModels,
 	extraArgsFromEnv,
 	spawnAgy,
@@ -164,6 +165,34 @@ describe("agy/process.ts", () => {
 				prompt: "hello",
 			});
 			expect(argsNullMode).toContain("--dangerously-skip-permissions");
+		});
+	});
+
+	describe("buildStreamingAgyArgs()", () => {
+		it("builds native bidirectional print-mode args", () => {
+			expect(
+				buildStreamingAgyArgs({
+					workingDir: "/cwd",
+					additionalDirs: ["/extra"],
+					conversationId: "conv-1",
+					modelId: "model-1",
+					permissionMode: null,
+				}),
+			).toEqual([
+				"--add-dir",
+				"/cwd",
+				"--add-dir",
+				"/extra",
+				"--conversation",
+				"conv-1",
+				"--model",
+				"model-1",
+				"--dangerously-skip-permissions",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+			]);
 		});
 	});
 

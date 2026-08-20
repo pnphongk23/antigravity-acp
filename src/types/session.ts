@@ -14,7 +14,7 @@ export interface Session {
 	cwd: string;
 	/** Extra workspace roots beyond cwd (from additionalDirectories param). */
 	additionalDirs: string[];
-	/** Client-supplied MCP servers, overlaid onto agy's mcp_config.json per spawn. */
+	/** Client MCP servers. Paseo's internal server is replaced by its caller-aware CLI. */
 	mcpServers: McpServer[];
 	/** Human-readable title, set from conversation title updates. */
 	title: string | null;

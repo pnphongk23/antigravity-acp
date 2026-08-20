@@ -1,23 +1,28 @@
-// Prompt-turn runtime: spawn agy, poll its DB while it runs, stream updates to
-// the client, and finalize. Bridges the agy subprocess and the conversation
-// streaming layer.
+// Prompt-turn runtime: keep one native agy stream per ACP session, poll its DB
+// for updates, and retain one-shot mode as a compatibility fallback.
 
 import { McpConfigOverlay } from "../agy/mcp";
+import { hasPaseoAgentMcpServer, PASEO_CLI_CONTEXT } from "../agy/paseo-cli";
 import { buildAgyArgs, extraArgsFromEnv, spawnAgy } from "../agy/process";
+import {
+	persistentAgyEnabled,
+	type StreamingAgyOptions,
+	StreamingAgyProcess,
+} from "../agy/streaming";
 import { POLL_INTERVAL_MS } from "../constants";
 import { conversationSnapshot } from "../conversation/scan";
 import { StreamPoller } from "../conversation/streaming";
 import type { Session } from "../types/session";
 import type { AcpClient } from "./client";
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const sleep = (ms: number) =>
+	new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface PromptOutcome {
 	stopReason: "end_turn" | "cancelled";
 	conversationId: string | null;
 	lastStepIdx: number;
 	hadUpdates: boolean;
-	/** Set when agy failed to start, or exited non-zero with nothing streamed. */
 	error?: string;
 }
 
@@ -26,52 +31,202 @@ export interface AdapterConfig {
 	conversationsDir: string;
 	workingDir: string;
 	skipNarration: boolean;
-	/** Override path to agy's mcp_config.json (tests). */
 	mcpConfigFile?: string;
 }
 
+interface StreamEntry {
+	runtime: StreamingAgyProcess;
+	mcpFingerprint: string;
+	restoreMcp: () => Promise<void>;
+}
+
 export class Adapter {
-	private readonly children = new Map<string, Bun.Subprocess>();
+	private readonly oneShotChildren = new Map<string, Bun.Subprocess>();
+	private readonly streams = new Map<string, StreamEntry>();
 	private readonly cancelled = new Set<string>();
+	private readonly inFlight = new Set<string>();
+	private readonly paseoCliIntroduced = new Set<string>();
 	private readonly mcpOverlay: McpConfigOverlay;
 
 	constructor(private readonly config: AdapterConfig) {
 		this.mcpOverlay = new McpConfigOverlay(config.mcpConfigFile);
 	}
 
-	/** Request cancellation of an in-flight prompt for a session. */
 	cancel(sessionId: string): void {
 		this.cancelled.add(sessionId);
-		const child = this.children.get(sessionId);
-		if (child) {
-			// SIGINT allows agy to flush its DB before exiting; on Windows we fall
-			// back to an ungraceful kill because SIGINT is not a real signal there.
-			if (process.platform === "win32") {
-				child.kill();
-			} else {
-				child.kill("SIGINT");
-			}
-		}
+		this.streams.get(sessionId)?.runtime.cancelTurn();
+		const child = this.oneShotChildren.get(sessionId);
+		if (!child) return;
+		if (process.platform === "win32") child.kill();
+		else child.kill("SIGINT");
 	}
 
-	/** Run a prompt turn end-to-end: spawn agy, stream deltas, finalize. */
+	async close(sessionId: string): Promise<void> {
+		this.cancel(sessionId);
+		const entry = this.streams.get(sessionId);
+		this.streams.delete(sessionId);
+		if (entry) await this.disposeStream(entry);
+		this.cancelled.delete(sessionId);
+		this.paseoCliIntroduced.delete(sessionId);
+	}
+
 	async runPrompt(
 		sessionId: string,
 		session: Session,
 		promptText: string,
 		client: AcpClient,
 	): Promise<PromptOutcome> {
+		if (this.inFlight.has(sessionId)) {
+			return this.errorOutcome(
+				session,
+				"a prompt is already running for this session",
+			);
+		}
+
+		this.inFlight.add(sessionId);
 		this.cancelled.delete(sessionId);
+		const effectivePrompt = this.withPaseoCliContext(
+			sessionId,
+			session,
+			promptText,
+		);
+		try {
+			if (persistentAgyEnabled()) {
+				const snapshot =
+					session.conversationId === null
+						? conversationSnapshot(this.config.conversationsDir)
+						: null;
+				const runtime = await this.prepareStream(sessionId, session);
+				if (runtime) {
+					return await this.runStreamingPrompt(
+						sessionId,
+						session,
+						effectivePrompt,
+						client,
+						runtime,
+						snapshot,
+					);
+				}
+			}
+			return await this.runOneShotPrompt(
+				sessionId,
+				session,
+				effectivePrompt,
+				client,
+			);
+		} finally {
+			this.inFlight.delete(sessionId);
+		}
+	}
 
-		// Use the session's cwd if set, otherwise fall back to the server's workingDir.
+	private withPaseoCliContext(
+		sessionId: string,
+		session: Session,
+		promptText: string,
+	): string {
+		if (
+			this.paseoCliIntroduced.has(sessionId) ||
+			!hasPaseoAgentMcpServer(session.mcpServers)
+		) {
+			return promptText;
+		}
+		this.paseoCliIntroduced.add(sessionId);
+		return `${PASEO_CLI_CONTEXT}\n\n${promptText}`;
+	}
+
+	private async prepareStream(
+		sessionId: string,
+		session: Session,
+	): Promise<StreamingAgyProcess | null> {
+		const options = this.streamOptions(session);
+		const mcpFingerprint = JSON.stringify(session.mcpServers);
+		let entry = this.streams.get(sessionId);
+		if (
+			entry &&
+			(!entry.runtime.isCompatible(options) ||
+				entry.mcpFingerprint !== mcpFingerprint)
+		) {
+			await this.disposeStream(entry);
+			this.streams.delete(sessionId);
+			entry = undefined;
+		}
+		if (entry) return entry.runtime;
+
+		const runtime = new StreamingAgyProcess(options);
+		const restoreMcp = await this.mcpOverlay.apply(session.mcpServers);
+		try {
+			await runtime.start();
+			this.streams.set(sessionId, {
+				runtime,
+				mcpFingerprint,
+				restoreMcp,
+			});
+			return runtime;
+		} catch (error) {
+			console.error(
+				`[agy-acp] stream-json unavailable, using one-shot mode: ${(error as Error).message}`,
+			);
+			await runtime.close();
+			await restoreMcp();
+			return null;
+		}
+	}
+
+	private async runStreamingPrompt(
+		sessionId: string,
+		session: Session,
+		promptText: string,
+		client: AcpClient,
+		runtime: StreamingAgyProcess,
+		snapshot: Set<string> | null,
+	): Promise<PromptOutcome> {
+		const poller = this.createPoller(session, runtime.conversationId, snapshot);
+		try {
+			await this.streamUntil(
+				sessionId,
+				client,
+				poller,
+				runtime.runTurn(promptText),
+			);
+		} catch (error) {
+			const entry = this.streams.get(sessionId);
+			if (entry) {
+				this.streams.delete(sessionId);
+				await this.disposeStream(entry);
+			} else {
+				await runtime.close();
+			}
+			const wasCancelled = this.cancelled.delete(sessionId);
+			const outcome = this.pollerOutcome(session, poller, wasCancelled);
+			if (!wasCancelled && !poller.hadUpdates) {
+				outcome.error = `agy failed: ${(error as Error).message}`;
+			}
+			return outcome;
+		}
+
+		const wasCancelled = this.cancelled.delete(sessionId);
+		return this.pollerOutcome(session, poller, wasCancelled);
+	}
+
+	private async disposeStream(entry: StreamEntry): Promise<void> {
+		try {
+			await entry.runtime.close();
+		} finally {
+			await entry.restoreMcp();
+		}
+	}
+
+	private async runOneShotPrompt(
+		sessionId: string,
+		session: Session,
+		promptText: string,
+		client: AcpClient,
+	): Promise<PromptOutcome> {
 		const effectiveCwd = session.cwd || this.config.workingDir;
-
-		// Snapshot existing conversations so we can bind the new DB agy creates.
 		const snapshot =
 			session.conversationId === null
 				? conversationSnapshot(this.config.conversationsDir)
 				: null;
-
 		const args = buildAgyArgs({
 			workingDir: effectiveCwd,
 			additionalDirs: session.additionalDirs,
@@ -81,101 +236,141 @@ export class Adapter {
 			prompt: promptText,
 			extraArgs: extraArgsFromEnv(),
 		});
-
 		const restoreMcp = await this.mcpOverlay.apply(session.mcpServers);
 
-		let child: Bun.Subprocess;
 		try {
+			let child: Bun.Subprocess;
 			try {
 				child = spawnAgy(this.config.binary, args, effectiveCwd);
-			} catch (err) {
-				return {
-					stopReason: "end_turn",
-					conversationId: session.conversationId,
-					lastStepIdx: session.lastStepIdx,
-					hadUpdates: false,
-					error: `failed to run agy: ${(err as Error).message}`,
-				};
+			} catch (error) {
+				return this.errorOutcome(
+					session,
+					`failed to run agy: ${(error as Error).message}`,
+				);
 			}
-			this.children.set(sessionId, child);
-
-			// Drain stderr concurrently (resolves when the process exits).
+			this.oneShotChildren.set(sessionId, child);
 			const stderrPromise = child.stderr
 				? new Response(child.stderr as ReadableStream).text()
 				: Promise.resolve("");
-
-			const poller = new StreamPoller({
-				dir: this.config.conversationsDir,
-				conversationId: session.conversationId,
-				baseStepIdx: session.lastStepIdx,
-				skipNarration: this.config.skipNarration,
-				cwd: effectiveCwd,
+			const poller = this.createPoller(
+				session,
+				session.conversationId,
 				snapshot,
-			});
-
-			// Serialized poll loop: emit updates in order, never overlapping.
-			const pollOnce = async () => {
-				for (const update of poller.poll()) {
-					await client.update(sessionId, update);
-				}
-			};
-
-			let polling = true;
-			const loop = (async () => {
-				while (polling) {
-					try {
-						await pollOnce();
-					} catch (err) {
-						console.error(`[agy-acp] poll error: ${(err as Error).message}`);
-					}
-					if (!polling) break;
-					await sleep(POLL_INTERVAL_MS);
-				}
-			})();
-
-			const exitCode = await child.exited;
-			polling = false;
-			await loop;
-			this.children.delete(sessionId);
-
-			// A few trailing polls to catch rows flushed right around exit.
-			for (let attempt = 0; attempt < 3; attempt++) {
-				try {
-					await pollOnce();
-				} catch (err) {
-					console.error(
-						`[agy-acp] final poll error: ${(err as Error).message}`,
-					);
-				}
-				if (attempt < 2) await sleep(100);
-			}
-			poller.close();
+			);
+			const exitCode = await this.streamUntil(
+				sessionId,
+				client,
+				poller,
+				child.exited,
+			);
+			this.oneShotChildren.delete(sessionId);
 
 			const stderr = (await stderrPromise).trim();
-			if (stderr.length > 0) console.error(`[agy-acp] agy stderr: ${stderr}`);
-
+			if (stderr) console.error(`[agy-acp] agy stderr: ${stderr}`);
 			const wasCancelled = this.cancelled.delete(sessionId);
-
-			const outcome: PromptOutcome = {
-				stopReason: wasCancelled ? "cancelled" : "end_turn",
-				conversationId: poller.conversationId,
-				lastStepIdx: poller.lastStepIdx,
-				hadUpdates: poller.hadUpdates,
-			};
-
-			if (!wasCancelled && exitCode !== 0) {
-				console.error(`[agy-acp] WARN: agy exited with status ${exitCode}`);
-				if (!poller.hadUpdates) {
-					outcome.error =
-						stderr.length > 0
-							? `agy failed: ${stderr}`
-							: `agy exited with status: ${exitCode}`;
-				}
+			const outcome = this.pollerOutcome(session, poller, wasCancelled);
+			if (!wasCancelled && exitCode !== 0 && !poller.hadUpdates) {
+				outcome.error = stderr || `agy exited with status: ${exitCode}`;
 			}
-
 			return outcome;
 		} finally {
 			await restoreMcp();
 		}
+	}
+
+	private streamOptions(session: Session): StreamingAgyOptions {
+		return {
+			binary: this.config.binary,
+			workingDir: session.cwd || this.config.workingDir,
+			additionalDirs: session.additionalDirs,
+			conversationId: session.conversationId,
+			modelId: session.modelId,
+			permissionMode: session.permissionMode,
+			extraArgs: extraArgsFromEnv(),
+		};
+	}
+
+	private createPoller(
+		session: Session,
+		conversationId: string | null,
+		snapshot: Set<string> | null,
+	): StreamPoller {
+		return new StreamPoller({
+			dir: this.config.conversationsDir,
+			conversationId,
+			baseStepIdx: session.lastStepIdx,
+			skipNarration: this.config.skipNarration,
+			cwd: session.cwd || this.config.workingDir,
+			snapshot,
+		});
+	}
+
+	private async streamUntil<T>(
+		sessionId: string,
+		client: AcpClient,
+		poller: StreamPoller,
+		completion: Promise<T>,
+	): Promise<T> {
+		const pollOnce = async () => {
+			for (const update of poller.poll())
+				await client.update(sessionId, update);
+		};
+		let polling = true;
+		const loop = (async () => {
+			while (polling) {
+				try {
+					await pollOnce();
+				} catch (error) {
+					console.error(`[agy-acp] poll error: ${(error as Error).message}`);
+				}
+				if (polling) await sleep(POLL_INTERVAL_MS);
+			}
+		})();
+
+		let result: T | undefined;
+		let failure: unknown;
+		try {
+			result = await completion;
+		} catch (error) {
+			failure = error;
+		}
+		polling = false;
+		await loop;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				await pollOnce();
+			} catch (error) {
+				console.error(
+					`[agy-acp] final poll error: ${(error as Error).message}`,
+				);
+			}
+			if (attempt < 2) await sleep(100);
+		}
+		poller.close();
+		if (failure) throw failure;
+		return result as T;
+	}
+
+	private pollerOutcome(
+		session: Session,
+		poller: StreamPoller,
+		wasCancelled: boolean,
+	): PromptOutcome {
+		return {
+			stopReason: wasCancelled ? "cancelled" : "end_turn",
+			conversationId: poller.conversationId ?? session.conversationId,
+			lastStepIdx: poller.lastStepIdx,
+			hadUpdates: poller.hadUpdates,
+		};
+	}
+
+	private errorOutcome(session: Session, error: string): PromptOutcome {
+		return {
+			stopReason: "end_turn",
+			conversationId: session.conversationId,
+			lastStepIdx: session.lastStepIdx,
+			hadUpdates: false,
+			error,
+		};
 	}
 }

@@ -1,7 +1,7 @@
 // Translate ACP `mcpServers` into agy's `mcp_config.json` and overlay them for
-// the duration of a spawn. agy has no `--mcp-config` flag, so the only way to
-// inject Paseo (or any other client-supplied MCP) is to write the global
-// config file, then restore it when the process exits.
+// the lifetime of the spawned process. agy has no `--mcp-config` flag, so other
+// client-supplied MCP servers are written to the global config and restored
+// when the process exits. Paseo's per-agent MCP uses its caller-aware CLI.
 //
 // Concurrent overlays of the same server name are stacked: restoring an inner
 // frame reveals the previous overlay instead of wiping a still-running prompt.
@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { McpServer } from "@agentclientprotocol/sdk";
 import { AGY_MCP_CONFIG_FILE } from "../constants";
+import { isPaseoAgentMcpServer } from "./paseo-cli";
 
 const ABSENT = Symbol("absent");
 
@@ -38,6 +39,11 @@ export function toAgyMcpServers(
 		const s = raw as McpServer & { type?: string; url?: string };
 		const name = typeof s.name === "string" ? s.name.trim() : "";
 		if (!name) continue;
+
+		// Paseo's URL contains a callerAgentId and is therefore per agent. agy only
+		// has a global MCP file, so forwarding it would make concurrent agents
+		// overwrite each other. Paseo CLI uses the inherited PASEO_AGENT_ID instead.
+		if (isPaseoAgentMcpServer(s)) continue;
 
 		if (s.type === "acp") continue;
 

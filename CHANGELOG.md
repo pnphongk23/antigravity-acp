@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Reuse one native `agy --input-format stream-json --output-format stream-json`
+  process per ACP session, with automatic one-shot fallback for older CLIs.
+- Add `AGY_PERSISTENT=0` and `AGY_PROMPT_TIMEOUT_MS` compatibility controls.
+- Route Paseo orchestration through its caller-aware CLI instead of writing the
+  per-agent `/mcp/agents` URL into agy's global MCP config.
+
 ## [1.1.1] - 2026-08-20
 
 ### Fixed

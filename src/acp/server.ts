@@ -89,6 +89,9 @@ export function runAcp() {
 		.onRequest(methods.agent.session.prompt, (ctx) =>
 			agentImpl.prompt(ctx.params, new AcpClient(ctx.client)),
 		)
+		.onRequest(methods.agent.session.setMode, (ctx) =>
+			agentImpl.setMode(ctx.params),
+		)
 		.onRequest(methods.agent.session.setConfigOption, (ctx) =>
 			agentImpl.setConfigOption(ctx.params),
 		)

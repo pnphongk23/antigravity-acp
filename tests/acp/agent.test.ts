@@ -116,6 +116,17 @@ describe("AgyAcpAgent", () => {
 		expect(res).toBeDefined();
 	});
 
+	test("setMode sets native session mode", async () => {
+		const res = await agent.setMode({ sessionId: "s1", modeId: "plan" });
+		expect(res).toEqual({});
+	});
+
+	test("setMode rejects unsupported modes", async () => {
+		expect(
+			agent.setMode({ sessionId: "s1", modeId: "unsupported" }),
+		).rejects.toThrow("unknown modeId: unsupported");
+	});
+
 	test("prompt handles mode injection", async () => {
 		const res = await agent.prompt(
 			{ sessionId: "s1", prompt: [{ type: "text", text: "hello" }] } as any,

@@ -16,6 +16,7 @@ import type {
 	ResumeSessionResponse,
 	SessionConfigOption,
 	SetSessionConfigOptionResponse,
+	SetSessionModeResponse,
 } from "@agentclientprotocol/sdk";
 import { RequestError } from "@agentclientprotocol/sdk";
 import {
@@ -381,6 +382,31 @@ export class AgyAcpAgent {
 
 	cancel(params: { sessionId?: string }): void {
 		if (params.sessionId) this.adapter.cancel(params.sessionId);
+	}
+
+	/** ACP-native mode setter used by clients such as Paseo. */
+	async setMode(params: {
+		sessionId?: string;
+		modeId?: string;
+	}): Promise<SetSessionModeResponse> {
+		const sessionId = this.requireSessionId(params.sessionId);
+		const modeId = params.modeId;
+		if (
+			modeId !== DEFAULT_MODE_ID &&
+			modeId !== PLAN_MODE_ID &&
+			modeId !== BYPASS_MODE_ID
+		) {
+			throw RequestError.invalidParams(
+				undefined,
+				`unknown modeId: ${modeId}`,
+			);
+		}
+
+		const session = await this.requireSession(sessionId);
+		// The internal representation uses null for the standard mode.
+		session.permissionMode = modeId === DEFAULT_MODE_ID ? null : modeId;
+		await this.sessions.persist(sessionId, session);
+		return {};
 	}
 
 	/** SDK-native config setter (session/set_config_option). */

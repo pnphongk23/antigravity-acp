@@ -17,8 +17,12 @@ describe("runAcp", () => {
 			return "mocked_stream" as any;
 		}) as any);
 
+		const requestMethods: unknown[] = [];
 		const agentBuilder = {
-			onRequest: () => agentBuilder,
+			onRequest: (method: unknown) => {
+				requestMethods.push(method);
+				return agentBuilder;
+			},
 			onNotification: () => agentBuilder,
 			connect: (_stream: any) => {
 				return { closed: Promise.resolve() };
@@ -56,6 +60,7 @@ describe("runAcp", () => {
 
 		expect(ndJsonStreamArgs.length).toBe(2);
 		expect(ndJsonStreamArgs[1]).toBe("mocked_stdin_stream");
+		expect(requestMethods).toContain(sdk.methods.agent.session.setMode);
 
 		// Test the custom writable stream behavior
 		const customWritable = ndJsonStreamArgs[0] as WritableStream;
